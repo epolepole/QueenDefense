@@ -12,11 +12,12 @@ ENEMY = 1
 QUEEN_TYPE = -1
 KNIGHT_TYPE = 0
 ARCHER_TYPE = 1
+GIANT_TYPE = 2
 
-STRUCTURE_NONE = 0
+STRUCTURE_NONE = -1
+STRUCTURE_MINE = 0
 STRUCTURE_TOWER = 1
 STRUCTURE_BARRACKS = 2
-STRUCTURE_MINE = 3
 
 KNIGHT_PRICE = 80
 ARCHER_PRICE = 100
@@ -25,26 +26,38 @@ GIANT_PRICE = 140
 
 K_KNIGHT = "KNIGHT"
 K_ARCHER = "ARCHER"
+K_GIANT = "GIANT"
+
+NONE = -1
+INPUT = 0
+ACTION = 1
+
 
 class QueenAction(Enum):
     NONE = -1
     CREATE_MINE_CLOSEST = 1
-    UPGRADE_MINE_CLOSEST = 2
     CREATE_ARCHER_BARRACKS = 10
-    CREATE_KNIGHT_BARRACKS_ON_MID = 11
-    CREATE_KNIGHT_BARRACKS_ON_THEIRS = 12
+    CREATE_KNIGHT_BARRACKS = 11
+    CREATE_GIANT_BARRACKS = 12
+    CREATE_KNIGHT_BARRACKS_ON_MID = 13
+    CREATE_KNIGHT_BARRACKS_ON_ENEMY = 14
     CREATE_TOWER_CLOSEST = 20
-    UPGRADE_TOWER_CLOSEST = 21
-
-
 
 
 DESIRED_INCOME = 100
 
 
-def log(text):
-    # print(text, file=sys.stderr)
+def log(text, key=NONE):
     pass
+    if key == INPUT:
+        print("Input: {}".format(text), file=sys.stderr)
+        # pass
+    elif key == ACTION:
+        print("Action: {}".format(text), file=sys.stderr)
+    else:
+        print("Generic: {}".format(text), file=sys.stderr)
+
+    # pass
 
 
 class Point:
@@ -53,10 +66,9 @@ class Point:
         self.y = i_y
 
 
-class Unit:
+class Unit(Point):
     def __init__(self, i_x, i_y, i_owner, i_unit_type, i_health):
-        self.x = i_x
-        self.y = i_y
+        Point.__init__(self, i_x, i_y)
         self.owner = i_owner
         self.unit_type = i_unit_type
         self.health = i_health
@@ -94,16 +106,16 @@ class Site:
         self.x = i_x
         self.y = i_y
         self.radius = i_radius
-        self.ignore_1 = None
-        self.ignore_2 = None
+        self.gold_remaining = None
+        self.max_mine_size = None
         self.structure_type = None
         self.owner = None
         self.param_1 = None
         self.param_2 = None
 
-    def update(self, i_ignore_1, i_ignore_2, i_structure_type, i_owner, i_param_1, i_param_2):
-        self.ignore_1 = i_ignore_1
-        self.ignore_2 = i_ignore_2
+    def update(self, i_gold_remaining, i_max_mine_size, i_structure_type, i_owner, i_param_1, i_param_2):
+        self.gold_remaining = i_gold_remaining
+        self.max_mine_size = i_max_mine_size
         self.structure_type = i_structure_type
         self.owner = i_owner
         self.param_1 = i_param_1
@@ -119,11 +131,14 @@ class Sites:
         self.owned_mines = list()
         self.owned_knight_barracks = list()
         self.owned_archer_barracks = list()
+        self.owned_giant_barracks = list()
         self.owned_avail_knight_barracks = list()
         self.owned_avail_archer_barracks = list()
+        self.owned_avail_giant_barracks = list()
         self.enemy_knight_barracks = list()
         self.total_sites = 0
         self.total_income = 0
+        self.desired_site = None
 
     def __getitem__(self, key):
         return self.sites_dict[key]
@@ -138,8 +153,10 @@ class Sites:
         self.owned_mines.clear()
         self.owned_knight_barracks.clear()
         self.owned_archer_barracks.clear()
+        self.owned_giant_barracks.clear()
         self.owned_avail_knight_barracks.clear()
         self.owned_avail_archer_barracks.clear()
+        self.owned_avail_giant_barracks.clear()
         self.enemy_knight_barracks.clear()
         self.total_income = 0
 
@@ -173,43 +190,85 @@ class Sites:
                     self.owned_knight_barracks.append(i_site_id)
                     if i_param_1 == 0:
                         self.owned_avail_knight_barracks.append(i_site_id)
+                if i_param_2 == GIANT_TYPE:
+                    self.owned_giant_barracks.append(i_site_id)
+                    if i_param_1 == 0:
+                        self.owned_avail_giant_barracks.append(i_site_id)
         elif i_owner == NEUTRAL:
             self.neutral_sites.append(i_site_id)
 
 
+def is_non_friendly_buildable(i_site_id, i_sites: Sites):
+    non_friend_buildings = list()
+    find_not_friendly_buildable(i_sites, non_friend_buildings)
+    for site in non_friend_buildings:
+        log("Checking site {}".format(site.site_id))
+        if i_site_id == site.site_id:
+            return True
+    return False
 
 
-def find_closest_neutral_to_point(i_sites: Sites, i_point):
+def find_closest_to_point(i_sites: list, i_point: Point):
     dist = 10000000
     closest_site = None
-    for site_id in i_sites.neutral_sites:
-        dist_to_queen = calc_distance(i_sites[site_id], i_point)
-        if dist_to_queen < dist:
-            dist = dist_to_queen
-            closest_site = i_sites[site_id]
+    for site in i_sites:
+        dist_to_point = calc_distance(site, i_point)
+        if dist_to_point < dist:
+            dist = dist_to_point
+            closest_site = site
     return closest_site
+
+
+def find_not_friendly_buildable(i_sites: Sites, o_sites):
+    for site_id in i_sites.neutral_sites:
+        o_sites.append(i_sites[site_id])
+        log("Adding neutral {}".format(site_id))
+    for site_id in i_sites.enemy_sites:
+        if i_sites[site_id].structure_type != STRUCTURE_TOWER:
+            o_sites.append(i_sites[site_id])
+            log("Adding enemy {}".format(site_id))
+
+
+def find_closest_buildable_mine(i_sites: Sites, i_point: Point):
+    available_sites = list()
+    find_not_friendly_buildable(i_sites, available_sites)
+    for site in i_sites.owned_mines:
+        if i_sites[site].max_mine_size > i_sites[site].param_1:
+            log("Adding mine: {} to available sites".format(site))
+            available_sites.append(i_sites[site])
+    return find_closest_to_point(available_sites, i_point)
+
+
+def find_closest_not_friendly_buildable_to_point(i_sites: Sites, i_point: Point):
+    available_sites = list()
+    find_not_friendly_buildable(i_sites, available_sites)
+    return find_closest_to_point(available_sites, i_point)
+
+
+def find_closest_neutral_to_point(i_sites: Sites, i_point: Point):
+    return find_closest_to_point(i_sites.neutral_sites, i_point)
 
 
 def get_init_sites(i_sites: Sites):
     i_num_sites = input()
-    log("num_sites {}".format(i_num_sites))
+    log("num_sites {}".format(i_num_sites), INPUT)
     num_sites = int(i_num_sites)
     for i in range(num_sites):
         i_site_info = input()
-        log("site_info {}".format(i_site_info))
+        log("site_info {}".format(i_site_info), INPUT)
         site_id, x, y, radius = [int(j) for j in i_site_info.split()]
         i_sites.insert(Site(site_id, x, y, radius))
 
 
 def get_units(i_units: Units):
     i_num_units = input()
-    log("num_units {}".format(i_num_units))
+    log("num_units {}".format(i_num_units), INPUT)
     num_units = int(i_num_units)
     i_units.clear()
     for i in range(num_units):
         # unit_type: -1 = QUEEN, 0 = KNIGHT, 1 = ARCHER
         i_unit_info = input()
-        log("unit_info {}".format(i_unit_info))
+        log("unit_info {}".format(i_unit_info), INPUT)
         x, y, owner, unit_type, health = [int(j) for j in i_unit_info.split()]
         if unit_type == QUEEN_TYPE:
             if owner == FRIENDLY:
@@ -230,9 +289,9 @@ def get_sites(i_sites: Sites):
         # structure_type: -1 = No structure, 2 = Barracks
         # owner: -1 = No structure, 0 = Friendly, 1 = Enemy
         i_site_info = input()
-        log("site_info {}".format(i_site_info))
-        site_id, ignore_1, ignore_2, structure_type, owner, param_1, param_2 = [int(j) for j in i_site_info.split()]
-        i_sites.update(site_id, ignore_1, ignore_2, structure_type, owner, param_1, param_2)
+        log("site_info {}".format(i_site_info), INPUT)
+        site_id, gold_remaining, max_mine_size, structure_type, owner, param_1, param_2 = [int(j) for j in i_site_info.split()]
+        i_sites.update(site_id, gold_remaining, max_mine_size, structure_type, owner, param_1, param_2)
 
 
 def calc_distance(item_a, item_b):
@@ -254,130 +313,98 @@ def move_to_closest_neutral(i_sites: Sites, i_units: Units):
     move_to(find_closest_neutral_to_point(i_sites, i_units.queen))
 
 
-def build_barracks(site_id, i_type):
-    print("BUILD {} BARRACKS-{}".format(site_id, i_type))
+def build_structure(site_id, i_structure_type, i_barracks_type=""):
+    if i_structure_type == STRUCTURE_TOWER:
+        print("BUILD {} TOWER".format(site_id))
+    elif i_structure_type == STRUCTURE_MINE:
+        print("BUILD {} MINE".format(site_id))
+    elif i_structure_type == STRUCTURE_BARRACKS:
+        print("BUILD {} BARRACKS-{}".format(site_id, i_barracks_type))
 
 
-def build_tower(site_id):
-    print("BUILD {} TOWER".format(site_id))
-
-
-def build_mine(site_id):
-    print("BUILD {} MINE".format(site_id))
-
-
-desired_site = None
-
-
-def can_build_tower(i_touched_site, i_sites: Sites):
-    if i_touched_site == -1:
-        return False
-    if desired_site and i_touched_site != desired_site.site_id:
-        return True
-    if i_sites[i_touched_site].owner == FRIENDLY and i_sites[i_touched_site].structure_type == STRUCTURE_TOWER:
-        return True
-    if i_sites[i_touched_site].owner == ENEMY and i_sites[i_touched_site].structure_type != STRUCTURE_TOWER:
-        return True
-    if i_sites[i_touched_site].owner == NEUTRAL and i_sites[i_touched_site].structure_type == STRUCTURE_TOWER:
-        return True
-    return False
-
-
-def can_build_mine(i_touched_site, i_sites: Sites):
-    if i_touched_site == -1:
-        return False
-    if i_sites[i_touched_site].owner == ENEMY and i_sites[i_touched_site].structure_type != STRUCTURE_TOWER:
-        return True
-    if i_sites[i_touched_site].owner == NEUTRAL:
-        return True
-    if i_sites[i_touched_site].owner == FRIENDLY and i_sites[i_touched_site].structure_type != STRUCTURE_MINE:
-        return True
-    return False
-
-
-
-# def find_closest_buildable_mine_to_point(i_sites: Sites, i_point):
-    # for site in i_sites.sites_dict.values():
-        # if
-
-
-# def maintain_one_mine(i_touched_site, i_sites: Sites, i_units: Units):
-    # if i_sites.owned_mines and i_sites[i_sites.owned_mines[0]].
-
-
-# def perform_queen_action(i_action: QueenAction, i_touched_site, i_sites: Sites, i_units: Units):
-#     if i_action == QueenAction.CREATE_MINE_CLOSEST:
-#         if can_build_mine(i_touched_site, sites):
-#             build_mine(i_touched_site)
-    #     elif:
-    #
-    #
-    # if i_action == QueenAction.CREATE_ARCHER_BARRACKS:
-    # if i_action == QueenAction.CREATE_KNIGHT_BARRACKS_ON_MID:
-    # if i_action == QueenAction.CREATE_KNIGHT_BARRACKS_ON_THEIRS:
-    # if i_action == QueenAction.CREATE_TOWER_CLOSEST:
-    # if i_action == QueenAction.CREATE_MINE_CLOSEST:
-
-
-def queen_action(i_touched_site, i_sites: Sites, i_units: Units):
-    global desired_site
-    # if there are no buildings build the first archery
-    if len(i_sites.owned_archer_barracks) == 0:
-        if i_touched_site == -1 or i_sites[i_touched_site].owner != NEUTRAL:
-            move_to_closest_neutral(i_sites, i_units)
-            return
-        if i_sites[i_touched_site].owner != FRIENDLY:
-            build_barracks(i_touched_site, K_ARCHER)
-            return
-
-    if can_build_tower(i_touched_site, sites):
-        build_tower(i_touched_site)
+def move_or_construct(i_touched_site_id, i_sites: Sites, i_structure_type, i_barracks_type=""):
+    log("touched site: {}, desired site: {}".format(i_touched_site_id, i_sites.desired_site.site_id))
+    log("structure type: {}".format(i_structure_type))
+    if i_touched_site_id == -1:
+        move_to(i_sites.desired_site)
         return
-
-    # if there are no knight barracks go to build the first one at the mid point with the enemy queen
-    if len(i_sites.owned_knight_barracks) == 0:
-        if not desired_site:
-            desired_site = find_closest_neutral_to_point(i_sites, get_mid_point(i_units.queen, i_units.enemy_queen))
-        if i_touched_site != desired_site.site_id:
-            move_to(desired_site)
-            return
-        else:
-            build_barracks(i_touched_site, K_KNIGHT)
-            desired_site = None
-            return
-
-    # if we have one of each, move back to first point, away from enemy
-    # move_to(i_sites[i_sites.owned_archer_barracks[0]])
-    if len(i_sites.enemy_knight_barracks) != 0:
-        move_to(i_sites[i_sites.enemy_knight_barracks[0]])
+    if i_touched_site_id == i_sites.desired_site.site_id:
+        build_structure(i_touched_site_id, i_structure_type, i_barracks_type)
+        i_sites.desired_site = None
         return
-    move_to(i_sites[i_sites.neutral_sites[0]])
-    return
+    if is_non_friendly_buildable(i_touched_site_id, i_sites):
+        build_structure(i_touched_site_id, STRUCTURE_TOWER)
+        return
+    move_to(i_sites.desired_site)
 
 
-# def get_owned_buildable_sites(i_sites: dict):
-#     owned_sites = dict()
-#     for site_id, site in i_sites.items():
-#         if site.owner == FRIENDLY and site.param_1 == 0:
-#             owned_sites[site_id] = site
-#     return owned_sites
-#
-#
-# def get_max_buildable(i_sites: dict, max_count):
-#     buildable_sites = dict()
-#     count = 1
-#     for site_id, site in i_sites.items():
-#         if count <= max_count:
-#             buildable_sites[site_id] = site
-#         count += 1
-#     return buildable_sites
-#
-#
-# def train_all_sites(i_sites, i_gold):
-#     owned_sites = get_owned_buildable_sites(i_sites)
-#     max_buildable = int(i_gold/80)
-#     buildable_sites = get_max_buildable(owned_sites, max_buildable)
-#     run_train(buildable_sites)
+def create_mine_closest(i_touched_site_id, i_sites: Sites, i_units: Units):
+    if not i_sites.desired_site:
+        i_sites.desired_site = find_closest_buildable_mine(i_sites, i_units.queen)
+    move_or_construct(i_touched_site_id, i_sites, STRUCTURE_MINE)
+
+
+def create_barracks_closest(i_touched_site_id, i_sites: Sites, i_units: Units, barrack_type=K_ARCHER):
+    if not i_sites.desired_site:
+        i_sites.desired_site = find_closest_not_friendly_buildable_to_point(i_sites, i_units.queen)
+    move_or_construct(i_touched_site_id, i_sites, STRUCTURE_BARRACKS, barrack_type)
+
+
+def create_knight_mid(i_touched_site_id, i_sites: Sites, i_units: Units):
+    if not i_sites.desired_site:
+        mid_point = get_mid_point(i_units.queen, i_units.enemy_queen)
+        i_sites.desired_site = find_closest_not_friendly_buildable_to_point(i_sites, mid_point)
+    move_or_construct(i_touched_site_id, i_sites, STRUCTURE_BARRACKS, K_KNIGHT)
+
+
+def create_knight_enemy(i_touched_site_id, i_sites: Sites, i_units: Units):
+    if not i_sites.desired_site:
+        i_sites.desired_site = i_sites[i_sites.enemy_knight_barracks[0]]
+    move_or_construct(i_touched_site_id, i_sites, STRUCTURE_BARRACKS, K_KNIGHT)
+
+
+def perform_queen_action(i_action: QueenAction, i_touched_site_id, i_sites: Sites, i_units: Units):
+    if i_action == QueenAction.CREATE_MINE_CLOSEST:
+        create_mine_closest(i_touched_site_id, i_sites, i_units)
+    elif i_action == QueenAction.CREATE_ARCHER_BARRACKS:
+        create_barracks_closest(i_touched_site_id, i_sites, i_units, K_ARCHER)
+    elif i_action == QueenAction.CREATE_KNIGHT_BARRACKS:
+        create_barracks_closest(i_touched_site_id, i_sites, i_units, K_KNIGHT)
+    elif i_action == QueenAction.CREATE_GIANT_BARRACKS:
+        create_barracks_closest(i_touched_site_id, i_sites, i_units, K_GIANT)
+    elif i_action == QueenAction.CREATE_KNIGHT_BARRACKS_ON_MID:
+        create_knight_mid(i_touched_site_id, i_sites, i_units)
+    elif i_action == QueenAction.CREATE_KNIGHT_BARRACKS_ON_ENEMY:
+        create_knight_enemy(i_touched_site_id, i_sites, i_units)
+    else:
+        create_mine_closest(i_touched_site_id, i_sites, i_units)
+
+
+# Get action
+def enough_mines(i_sites: Sites):
+    if i_sites.total_income < 5:
+        return False
+    return True
+
+
+def find_action(i_sites: Sites, i_units: Units):
+    if not enough_mines(i_sites):
+        return QueenAction.CREATE_MINE_CLOSEST
+    if not i_sites.owned_archer_barracks:
+        return QueenAction.CREATE_ARCHER_BARRACKS
+    if not i_sites.owned_knight_barracks:
+        return QueenAction.CREATE_KNIGHT_BARRACKS
+    if not i_sites.owned_giant_barracks:
+        return QueenAction.CREATE_GIANT_BARRACKS
+    # if i_sites.enemy_knight_barracks:
+    #     return QueenAction.CREATE_KNIGHT_BARRACKS_ON_ENEMY
+    return QueenAction.CREATE_MINE_CLOSEST
+
+
+def queen_action(i_touched_site_id, i_sites: Sites, i_units: Units):
+    action_to_do = find_action(i_sites, i_units)
+    log("action: {}".format(action_to_do.name), ACTION)
+    perform_queen_action(action_to_do, i_touched_site_id, i_sites, i_units)
 
 
 def dict_keys_to_str(a_keys_list: list):
@@ -401,7 +428,7 @@ def training_action(i_sites: Sites, i_units: Units, i_gold):
 
     sites_to_train = list()
     # if we have no knights but available knight barracks, train them
-    if len(i_sites.owned_avail_knight_barracks) != 0 and i_units.count_owned_knights() < 7:
+    if len(i_sites.owned_avail_knight_barracks) != 0 and i_units.count_owned_knights() < 9:
         max_buildable = int(i_gold / KNIGHT_PRICE)
         if max_buildable > 0:
             sites_to_train.append(i_sites.owned_avail_knight_barracks[0])
@@ -411,19 +438,23 @@ def training_action(i_sites: Sites, i_units: Units, i_gold):
         if max_buildable > 0:
             sites_to_train.append(i_sites.owned_avail_archer_barracks[0])
             i_gold -= ARCHER_PRICE
+    if len(i_sites.owned_avail_giant_barracks) != 0:
+        max_buildable = int(i_gold / GIANT_PRICE)
+        if max_buildable > 0:
+            sites_to_train.append(i_sites.owned_avail_giant_barracks[0])
+            i_gold -= GIANT_PRICE
     run_train(sites_to_train)
 
 
 sites = Sites()
 units = Units()
 get_init_sites(sites)
-
 # game loop
 while True:
     # touched_site: -1 if none
     i_extra_input = input()
-    log("extra_input {}".format(i_extra_input))
-    gold, touched_site = [int(i) for i in i_extra_input.split()]
+    log("extra_input {}".format(i_extra_input), INPUT)
+    gold, touched_site_id = [int(i) for i in i_extra_input.split()]
     get_sites(sites)
     get_units(units)
 
@@ -432,5 +463,5 @@ while True:
 
     # First line: A valid queen action
     # Second line: A set of training instructions
-    queen_action(touched_site, sites, units)
+    queen_action(touched_site_id, sites, units)
     training_action(sites, units, gold)
