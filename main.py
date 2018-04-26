@@ -32,6 +32,7 @@ NONE = -1
 INPUT = 0
 ACTION = 1
 
+last_build = None
 
 class QueenAction(Enum):
     NONE = -1
@@ -42,6 +43,7 @@ class QueenAction(Enum):
     CREATE_KNIGHT_BARRACKS_ON_MID = 13
     CREATE_KNIGHT_BARRACKS_ON_ENEMY = 14
     CREATE_TOWER_CLOSEST = 20
+    CREATE_MINE_OR_TOWER = 30
 
 
 DESIRED_INCOME = 100
@@ -50,8 +52,8 @@ DESIRED_INCOME = 100
 def log(text, key=NONE):
     pass
     if key == INPUT:
-        print("Input: {}".format(text), file=sys.stderr)
-        # pass
+        # print("Input: {}".format(text), file=sys.stderr)
+        pass
     elif key == ACTION:
         print("Action: {}".format(text), file=sys.stderr)
     else:
@@ -61,9 +63,15 @@ def log(text, key=NONE):
 
 
 class Point:
-    def __init__(self, i_x, i_y):
+    def __init__(self, i_x=-1, i_y=-1):
         self.x = i_x
         self.y = i_y
+
+    def __bool__(self):
+        return self.x != -1 and self.y != -1
+
+
+starting_point = Point()
 
 
 class Unit(Point):
@@ -222,11 +230,11 @@ def find_closest_to_point(i_sites: list, i_point: Point):
 def find_not_friendly_buildable(i_sites: Sites, o_sites):
     for site_id in i_sites.neutral_sites:
         o_sites.append(i_sites[site_id])
-        log("Adding neutral {}".format(site_id))
+        # log("Adding neutral {}".format(site_id))
     for site_id in i_sites.enemy_sites:
         if i_sites[site_id].structure_type != STRUCTURE_TOWER:
             o_sites.append(i_sites[site_id])
-            log("Adding enemy {}".format(site_id))
+            # log("Adding enemy {}".format(site_id))
 
 
 def find_closest_buildable_mine(i_sites: Sites, i_point: Point):
@@ -234,7 +242,7 @@ def find_closest_buildable_mine(i_sites: Sites, i_point: Point):
     find_not_friendly_buildable(i_sites, available_sites)
     for site in i_sites.owned_mines:
         if i_sites[site].max_mine_size > i_sites[site].param_1:
-            log("Adding mine: {} to available sites".format(site))
+            # log("Adding mine: {} to available sites".format(site))
             available_sites.append(i_sites[site])
     return find_closest_to_point(available_sites, i_point)
 
@@ -261,6 +269,7 @@ def get_init_sites(i_sites: Sites):
 
 
 def get_units(i_units: Units):
+    global starting_point
     i_num_units = input()
     log("num_units {}".format(i_num_units), INPUT)
     num_units = int(i_num_units)
@@ -272,6 +281,8 @@ def get_units(i_units: Units):
         x, y, owner, unit_type, health = [int(j) for j in i_unit_info.split()]
         if unit_type == QUEEN_TYPE:
             if owner == FRIENDLY:
+                if not starting_point:
+                    starting_point = Point(x, y)
                 i_units.queen = Unit(x, y, owner, unit_type, health)
             elif owner == ENEMY:
                 i_units.enemy_queen = Unit(x, y, owner, unit_type, health)
@@ -332,29 +343,70 @@ def move_or_construct(i_touched_site_id, i_sites: Sites, i_structure_type, i_bar
         build_structure(i_touched_site_id, i_structure_type, i_barracks_type)
         i_sites.desired_site = None
         return
+    if i_sites[i_touched_site_id].owner == FRIENDLY and\
+            i_sites[i_touched_site_id].structure_type == STRUCTURE_TOWER and \
+            i_sites[i_touched_site_id].param_1 < 350:
+        build_structure(i_touched_site_id, STRUCTURE_TOWER)
+        return
+    if i_sites[i_touched_site_id].owner == FRIENDLY and \
+            i_sites[i_touched_site_id].structure_type == STRUCTURE_MINE and \
+            i_sites[i_touched_site_id].max_mine_size > i_sites[i_touched_site_id].param_1:
+        build_structure(i_touched_site_id, STRUCTURE_MINE)
+        return
     if is_non_friendly_buildable(i_touched_site_id, i_sites):
         build_structure(i_touched_site_id, STRUCTURE_TOWER)
         return
     move_to(i_sites.desired_site)
 
 
+def create_mine_or_tower(i_touched_site_id, i_sites: Sites, i_units: Units):
+    global last_build
+    log("Creating mine or tower, last built {}".format(last_build), ACTION)
+    if not i_sites.desired_site:
+        i_sites.desired_site = find_closest_not_friendly_buildable_to_point(i_sites, starting_point)
+
+    if i_sites.desired_site.gold_remaining < 50:
+        log("low gold remaining", ACTION)
+        move_or_construct(i_touched_site_id, i_sites, STRUCTURE_TOWER)
+        last_build = STRUCTURE_TOWER
+        return
+    if i_sites.desired_site.max_mine_size > 2:
+        log("high mine max size", ACTION)
+        move_or_construct(i_touched_site_id, i_sites, STRUCTURE_MINE)
+        last_build = STRUCTURE_MINE
+        return
+    if last_build == STRUCTURE_MINE:
+        log("last was mine", ACTION)
+        move_or_construct(i_touched_site_id, i_sites, STRUCTURE_TOWER)
+        last_build = STRUCTURE_TOWER
+        return
+    log("No special condition", ACTION)
+    move_or_construct(i_touched_site_id, i_sites, STRUCTURE_MINE)
+    last_build = STRUCTURE_MINE
+
+
 def create_mine_closest(i_touched_site_id, i_sites: Sites, i_units: Units):
     if not i_sites.desired_site:
-        i_sites.desired_site = find_closest_buildable_mine(i_sites, i_units.queen)
+        i_sites.desired_site = find_closest_buildable_mine(i_sites, starting_point)
+    if i_sites.desired_site.gold_remaining < 50:
+        log("low gold remaining", ACTION)
+        move_or_construct(i_touched_site_id, i_sites, STRUCTURE_TOWER)
+        i_sites.desired_site = find_closest_buildable_mine(i_sites, starting_point)
+        return
     move_or_construct(i_touched_site_id, i_sites, STRUCTURE_MINE)
 
 
 def create_barracks_closest(i_touched_site_id, i_sites: Sites, i_units: Units, barrack_type=K_ARCHER):
     if not i_sites.desired_site:
-        i_sites.desired_site = find_closest_not_friendly_buildable_to_point(i_sites, i_units.queen)
+        i_sites.desired_site = find_closest_not_friendly_buildable_to_point(i_sites, starting_point)
     move_or_construct(i_touched_site_id, i_sites, STRUCTURE_BARRACKS, barrack_type)
 
 
-def create_knight_mid(i_touched_site_id, i_sites: Sites, i_units: Units):
+def create_barracks_mid(i_touched_site_id, i_sites: Sites, i_units: Units, barrack_type=K_ARCHER):
     if not i_sites.desired_site:
-        mid_point = get_mid_point(i_units.queen, i_units.enemy_queen)
+        mid_point = get_mid_point(starting_point, i_units.enemy_queen)
         i_sites.desired_site = find_closest_not_friendly_buildable_to_point(i_sites, mid_point)
-    move_or_construct(i_touched_site_id, i_sites, STRUCTURE_BARRACKS, K_KNIGHT)
+    move_or_construct(i_touched_site_id, i_sites, STRUCTURE_BARRACKS, barrack_type)
 
 
 def create_knight_enemy(i_touched_site_id, i_sites: Sites, i_units: Units):
@@ -370,35 +422,35 @@ def perform_queen_action(i_action: QueenAction, i_touched_site_id, i_sites: Site
         create_barracks_closest(i_touched_site_id, i_sites, i_units, K_ARCHER)
     elif i_action == QueenAction.CREATE_KNIGHT_BARRACKS:
         create_barracks_closest(i_touched_site_id, i_sites, i_units, K_KNIGHT)
-    elif i_action == QueenAction.CREATE_GIANT_BARRACKS:
-        create_barracks_closest(i_touched_site_id, i_sites, i_units, K_GIANT)
+    # elif i_action == QueenAction.CREATE_GIANT_BARRACKS:
+    #     create_barracks_closest(i_touched_site_id, i_sites, i_units, K_GIANT)
     elif i_action == QueenAction.CREATE_KNIGHT_BARRACKS_ON_MID:
-        create_knight_mid(i_touched_site_id, i_sites, i_units)
+        create_barracks_mid(i_touched_site_id, i_sites, i_units, K_KNIGHT)
     elif i_action == QueenAction.CREATE_KNIGHT_BARRACKS_ON_ENEMY:
         create_knight_enemy(i_touched_site_id, i_sites, i_units)
     else:
-        create_mine_closest(i_touched_site_id, i_sites, i_units)
+        create_mine_or_tower(i_touched_site_id, i_sites, i_units)
 
 
 # Get action
 def enough_mines(i_sites: Sites):
-    if i_sites.total_income < 5:
+    if i_sites.total_income < 3:
         return False
     return True
 
 
 def find_action(i_sites: Sites, i_units: Units):
-    if not enough_mines(i_sites):
-        return QueenAction.CREATE_MINE_CLOSEST
     if not i_sites.owned_archer_barracks:
         return QueenAction.CREATE_ARCHER_BARRACKS
     if not i_sites.owned_knight_barracks:
-        return QueenAction.CREATE_KNIGHT_BARRACKS
+        return QueenAction.CREATE_KNIGHT_BARRACKS_ON_MID
+    if not enough_mines(i_sites):
+        return QueenAction.CREATE_MINE_CLOSEST
     if not i_sites.owned_giant_barracks:
         return QueenAction.CREATE_GIANT_BARRACKS
     # if i_sites.enemy_knight_barracks:
     #     return QueenAction.CREATE_KNIGHT_BARRACKS_ON_ENEMY
-    return QueenAction.CREATE_MINE_CLOSEST
+    return QueenAction.CREATE_MINE_OR_TOWER
 
 
 def queen_action(i_touched_site_id, i_sites: Sites, i_units: Units):
