@@ -336,6 +336,8 @@ def build_structure(site_id, i_structure_type, i_barracks_type=""):
 def move_or_construct(i_touched_site_id, i_sites: Sites, i_structure_type, i_barracks_type=""):
     log("touched site: {}, desired site: {}".format(i_touched_site_id, i_sites.desired_site.site_id))
     log("structure type: {}".format(i_structure_type))
+    global last_build
+
     if i_touched_site_id == -1:
         move_to(i_sites.desired_site)
         return
@@ -343,19 +345,34 @@ def move_or_construct(i_touched_site_id, i_sites: Sites, i_structure_type, i_bar
         build_structure(i_touched_site_id, i_structure_type, i_barracks_type)
         i_sites.desired_site = None
         return
-    if i_sites[i_touched_site_id].owner == FRIENDLY and\
-            i_sites[i_touched_site_id].structure_type == STRUCTURE_TOWER and \
-            i_sites[i_touched_site_id].param_1 < 350:
+    touched_site = i_sites[i_touched_site_id]
+    if touched_site.owner == FRIENDLY and\
+            touched_site.structure_type == STRUCTURE_TOWER and \
+            touched_site.param_1 < 350:
         build_structure(i_touched_site_id, STRUCTURE_TOWER)
         return
-    if i_sites[i_touched_site_id].owner == FRIENDLY and \
-            i_sites[i_touched_site_id].structure_type == STRUCTURE_MINE and \
-            i_sites[i_touched_site_id].max_mine_size > i_sites[i_touched_site_id].param_1:
+    if touched_site.owner == FRIENDLY and \
+            touched_site.structure_type == STRUCTURE_MINE and \
+            touched_site.max_mine_size > touched_site.param_1:
         build_structure(i_touched_site_id, STRUCTURE_MINE)
         return
     if is_non_friendly_buildable(i_touched_site_id, i_sites):
-        build_structure(i_touched_site_id, STRUCTURE_TOWER)
+        if touched_site.gold_remaining < 50:
+            build_structure(i_touched_site_id, STRUCTURE_TOWER)
+            last_build = STRUCTURE_TOWER
+            return
+        if touched_site.max_mine_size > 2:
+            build_structure(i_touched_site_id, STRUCTURE_MINE)
+            last_build = STRUCTURE_MINE
+            return
+        if last_build == STRUCTURE_MINE:
+            build_structure(i_touched_site_id, STRUCTURE_TOWER)
+            last_build = STRUCTURE_TOWER
+            return
+        build_structure(i_touched_site_id, STRUCTURE_MINE)
+        last_build = STRUCTURE_MINE
         return
+
     move_to(i_sites.desired_site)
 
 
